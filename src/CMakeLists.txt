@@ -1,2 +1,2 @@
 set (SOURCES main.c)
-add_executable (${SOURCES})
+add_executable (ffd ${SOURCES})
