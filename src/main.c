@@ -105,12 +105,13 @@ main_loop ()
   /* Loop forever until should_continue is set to false.  */
   while (should_continue)
 	{
-	  printf ("should continue is %i\n", should_continue);
 	  /* The file descriptor for the new connection.  */
 	  int newfd;
 
 	  struct sockaddr_storage their_sock;
 	  socklen_t their_socklen;
+
+          printf ("Accepting connections.\n");
 
 	  /* Accept a connection.  */
 	  newfd = accept (sockfd,
