@@ -76,7 +76,7 @@ LIST_HEAD(pthread_list, thread_listent) thread_list;
 static void	close_socket();
 static void	handle_connection(int socket);
 static void	init_networking();
-static void init_threads();
+static void	init_threads();
 static void	main_loop();
 static void	print_address(FILE *stream, struct sockaddr *sockaddr);
 static void	signal_handler(int signum);
@@ -90,36 +90,36 @@ static void	*handler_function(void *data);
 static void
 init_networking()
 {
-		struct addrinfo *host_addr, hints;
-		int status;
+	struct addrinfo *host_addr, hints;
+	int status;
 
-		memset(&hints, 0, sizeof(struct addrinfo));
-		hints.ai_family = AF_UNSPEC;
-		hints.ai_socktype = SOCK_STREAM;
-		hints.ai_flags = AI_PASSIVE;
+	memset(&hints, 0, sizeof(struct addrinfo));
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags = AI_PASSIVE;
 
-		status = getaddrinfo(NULL, SERVER_PORT, &hints, &host_addr);
+	status = getaddrinfo(NULL, SERVER_PORT, &hints, &host_addr);
 
-		if (status == -1)
-			err(1, "Failed to create address");
+	if (status == -1)
+		err(1, "Failed to create address");
 
-		sockfd = socket(host_addr->ai_family, host_addr->ai_socktype,
-			host_addr->ai_protocol);
+	sockfd = socket(host_addr->ai_family, host_addr->ai_socktype,
+	    host_addr->ai_protocol);
 
-		if (sockfd == -1)
-			err(1, "Failed to create socket");
+	if (sockfd == -1)
+		err(1, "Failed to create socket");
 
-		status = bind(sockfd, host_addr->ai_addr, host_addr->ai_addrlen);
+	status = bind(sockfd, host_addr->ai_addr, host_addr->ai_addrlen);
 
-		if (status == -1)
-			err(1, "Failed to bind port %s", SERVER_PORT);
+	if (status == -1)
+		err(1, "Failed to bind port %s", SERVER_PORT);
 
-		freeaddrinfo(host_addr);
+	freeaddrinfo(host_addr);
 
-		signal(SIGINT, signal_handler);
-		signal(SIGTERM, signal_handler);
+	signal(SIGINT, signal_handler);
+	signal(SIGTERM, signal_handler);
 
-		listen(sockfd, BACKLOG);
+	listen(sockfd, BACKLOG);
 }
 
 /*
@@ -130,41 +130,41 @@ static void
 signal_handler(int signum)
 {
 
-		close_socket();
-		terminate_threads();
+	close_socket();
+	terminate_threads();
 
-		/* Set the signal back to its original value and use that.  */
-		signal (signum, SIG_DFL);
-		raise (signum);
+	/* Set the signal back to its original value and use that.  */
+	signal(signum, SIG_DFL);
+	raise(signum);
 }
 
 /* Start accepting connections.  Exists the program if there's an error.  */
 static void
 main_loop()
 {
-		struct sockaddr_storage their_sock;
-		socklen_t their_socklen;
-		int newfd;
+	struct sockaddr_storage their_sock;
+	socklen_t their_socklen;
+	int newfd;
 
-		/* Loop forever until should_continue is set to false.  */
-		while (should_continue) {
-			printf("Accepting connections.\n");
+	/* Loop forever until should_continue is set to false.  */
+	while (should_continue) {
+		printf("Accepting connections.\n");
 
-			/* Accept a connection.  */
-			newfd = accept (sockfd, (struct sockaddr *)&their_sock,
-				&their_socklen);
+		/* Accept a connection.  */
+		newfd = accept (sockfd, (struct sockaddr *)&their_sock,
+		    &their_socklen);
 
-			if (newfd == -1)
-				warn ("Failed to accept connection");
+		if (newfd == -1)
+			warn ("Failed to accept connection");
 
-			printf("Got a connection from ");
-			print_address(stdout, (struct sockaddr *)&their_sock);
-			printf("\n");
+		printf("Got a connection from ");
+		print_address(stdout, (struct sockaddr *)&their_sock);
+		printf("\n");
 
-			handle_connection(newfd);
-		}
+		handle_connection(newfd);
+	}
 
-		close_socket();
+	close_socket();
 }
 
 /* Closes the socket, supposed to be on exit.  */
@@ -172,64 +172,71 @@ static void
 close_socket()
 {
 
-		if (sockfd > -1)
-			close (sockfd);
+	if (sockfd > -1)
+		close(sockfd);
 
-		sockfd = -1;
+	sockfd = -1;
 }
 
 /*
- * Prints the address (inet or inet6) to the given stream.  I decided to it this
- * way because returning a char array would mean that it would need to be freed
- * with free() which is annoying and ties it to malloc () (as opposed to c++'s
- * delete.
+ * Prints the address (inet or inet6) to the given stream.  I decided to it
+ * this way because returning a char array would mean that it would need to be
+ * freed with free() which is annoying and ties it to malloc () (as opposed to
+ * c++'s delete.
  */
 static void
 print_address(FILE *stream, struct sockaddr *sockaddr)
 {
+	/*
+	 * It seems weird to put both of these character declarations here, but
+	 * it's to follow the style guide of declaring local variables at the
+	 * start and not declaring variables inside of blocks.
+	 */
+	struct sockaddr_in *as_inet;
+	char ip[INET_ADDRSTRLEN];
+	char ip6[INET6_ADDRSTRLEN];
 
-		if (sockaddr->sa_family == AF_INET)
-		{
-			struct sockaddr_in *as_inet = (struct sockaddr_in *)sockaddr;
-			char ip[INET_ADDRSTRLEN];
+	if (sockaddr->sa_family == AF_INET)
+	{
+		as_inet = (struct sockaddr_in *)sockaddr;
+		inet_ntop (AF_INET, &(as_inet->sin_addr), ip, INET_ADDRSTRLEN);
+		fprintf (stream, "%s", ip);
+	}
+	else if (sockaddr->sa_family == AF_INET6)
+	{
+		struct sockaddr_in6 *as_inet6 =
+		    (struct sockaddr_in6 *)sockaddr;
 
-			inet_ntop (AF_INET, &(as_inet->sin_addr), ip, INET_ADDRSTRLEN);
+		inet_ntop(AF_INET6, &(as_inet6->sin6_addr), ip6,
+		    INET6_ADDRSTRLEN);
 
-			fprintf (stream, "%s", ip);
-		}
-		else if (sockaddr->sa_family == AF_INET6)
-		{
-			struct sockaddr_in6 *as_inet6 = (struct sockaddr_in6 *)sockaddr;
-			char ip[INET6_ADDRSTRLEN];
-
-			inet_ntop(AF_INET6, &(as_inet6->sin6_addr), ip, INET6_ADDRSTRLEN);
-
-			fprintf(stream, "%s", ip);
-		}
+		fprintf(stream, "%s", ip6);
+	}
 }
 
 /* Initialize the list of threads. Other stuff can be put here if necessary. */
 static void
 init_threads()
 {
-		LIST_INIT(&thread_list);
+
+	LIST_INIT(&thread_list);
 }
 
 /* Called to stop all threads and clean up the list. */
 static void
 terminate_threads()
 {
-		struct thread_listent *tmp;
+	struct thread_listent *tmp;
 
-		while (!LIST_EMPTY(&thread_list)) {
-			tmp = LIST_FIRST(&thread_list);
+	while (!LIST_EMPTY(&thread_list)) {
+		tmp = LIST_FIRST(&thread_list);
 
-			pthread_join(tmp->id, NULL);
+		pthread_join(tmp->id, NULL);
 
-			/* I think this is the right way to do it, not sure. */
-			LIST_REMOVE(tmp, ents);
-			free(tmp);
-		}
+		/* I think this is the right way to do it, not sure. */
+		LIST_REMOVE(tmp, ents);
+		free(tmp);
+	}
 }
 
 /* Stop all threads and remove theme. */
@@ -241,48 +248,48 @@ terminate_threads()
 static void
 handle_connection(int socket)
 {
-		struct thread_listent *ent;
-		struct thread_data *data;
-		int status;
-		pthread_t id;
+	struct thread_listent *ent;
+	struct thread_data *data;
+	int status;
+	pthread_t id;
 
-		ent = malloc(sizeof(struct thread_listent));
-		if (ent == NULL)
-			err(1, NULL);
+	ent = malloc(sizeof(struct thread_listent));
+	if (ent == NULL)
+		err(1, NULL);
 
-		data = malloc(sizeof(struct thread_data));
-		if (data == NULL)
-			err(1, NULL);
+	data = malloc(sizeof(struct thread_data));
+	if (data == NULL)
+		err(1, NULL);
 
-		data->sockfd = socket;
+	data->sockfd = socket;
 
-		status = pthread_create(&id, NULL, handler_function, data);
+	status = pthread_create(&id, NULL, handler_function, data);
 
-		if (status == 0) {
-			ent->id = id;
-			LIST_INSERT_HEAD(&thread_list, ent, ents);
-		} else {
-			warn("Failed to create new thread");
-			free(ent);
-			free(data);
-			close (socket);
-		}
+	if (status == 0) {
+		ent->id = id;
+		LIST_INSERT_HEAD(&thread_list, ent, ents);
+	} else {
+		warn("Failed to create new thread");
+		free(ent);
+		free(data);
+		close(socket);
+	}
 }
 
 /* The function to handle a socket. */
 static void *
 handler_function(void *data)
 {
-		struct thread_data *as_data;
+	struct thread_data *as_data;
 
-		as_data = (struct thread_data *)data;
+	as_data = (struct thread_data *)data;
 
-		/* TODO: Handle the connection here. */
+	/* TODO: Handle the connection here. */
 
-		close(as_data->sockfd);
-		free (data);
+	close(as_data->sockfd);
+	free(data);
 
-		return (NULL);
+	return (NULL);
 }
 
 /*
@@ -291,7 +298,8 @@ handler_function(void *data)
 int
 main(int argc, char *argv[])
 {
-		init_networking();
-		main_loop();
-		terminate_threads();
+
+	init_networking();
+	main_loop();
+	terminate_threads();
 }
