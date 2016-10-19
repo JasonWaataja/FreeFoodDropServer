@@ -57,9 +57,11 @@ enum thread_status { NOT_COMPLETED = 0, COMPLETED };
 /* Entry for a pthread list entry. */
 struct thread_listent {
 	pthread_t id;
-	enum thread_status has_stopped;
-	pthread_mutex_t has_stopped_mut;
 	LIST_ENTRY(thread_listent) ents;
+};
+
+struct thread_data {
+	int sockfd;
 };
 
 /* The linked list of threads. Use this to terminate them. */
@@ -79,6 +81,7 @@ static void	main_loop();
 static void	print_address(FILE *stream, struct sockaddr *sockaddr);
 static void	signal_handler(int signum);
 static void	terminate_threads();
+static void	*handler_function(void *data);
 
 /* 
  * Set up the networking.  Creates the port and sets sockfd to the value.
@@ -88,9 +91,9 @@ static void
 init_networking()
 {
 		struct addrinfo *host_addr, hints;
-		int status, sockfd;
+		int status;
 
-		memset(&hints, 0, sizeof(hints));
+		memset(&hints, 0, sizeof(struct addrinfo));
 		hints.ai_family = AF_UNSPEC;
 		hints.ai_socktype = SOCK_STREAM;
 		hints.ai_flags = AI_PASSIVE;
@@ -128,7 +131,7 @@ signal_handler(int signum)
 {
 
 		close_socket();
-		/* Do a bunch of stuff to terminate the worker threads here.  */
+		terminate_threads();
 
 		/* Set the signal back to its original value and use that.  */
 		signal (signum, SIG_DFL);
@@ -220,13 +223,8 @@ terminate_threads()
 
 		while (!LIST_EMPTY(&thread_list)) {
 			tmp = LIST_FIRST(&thread_list);
-			/* TODO: Change this to have a timeout. */
-			pthread_mutex_lock (&tmp->has_stopped_mut);
 
-			if (tmp->has_stopped == NOT_COMPLETED)
-				pthread_cancel(tmp->id);
-
-			pthread_mutex_unlock (&tmp->has_stopped_mut);
+			pthread_join(tmp->id, NULL);
 
 			/* I think this is the right way to do it, not sure. */
 			LIST_REMOVE(tmp, ents);
@@ -243,8 +241,48 @@ terminate_threads()
 static void
 handle_connection(int socket)
 {
+		struct thread_listent *ent;
+		struct thread_data *data;
+		int status;
+		pthread_t id;
+
+		ent = malloc(sizeof(struct thread_listent));
+		if (ent == NULL)
+			err(1, NULL);
+
+		data = malloc(sizeof(struct thread_data));
+		if (data == NULL)
+			err(1, NULL);
+
+		data->sockfd = socket;
+
+		status = pthread_create(&id, NULL, handler_function, data);
+
+		if (status == 0) {
+			ent->id = id;
+			LIST_INSERT_HEAD(&thread_list, ent, ents);
+		} else {
+			warn("Failed to create new thread");
+			free(ent);
+			free(data);
+			close (socket);
+		}
+}
+
+/* The function to handle a socket. */
+static void *
+handler_function(void *data)
+{
+		struct thread_data *as_data;
+
+		as_data = (struct thread_data *)data;
+
 		/* TODO: Handle the connection here. */
-		close(socket);
+
+		close(as_data->sockfd);
+		free (data);
+
+		return (NULL);
 }
 
 /*
@@ -253,6 +291,7 @@ handle_connection(int socket)
 int
 main(int argc, char *argv[])
 {
-		init_networking ();
-		main_loop ();
+		init_networking();
+		main_loop();
+		terminate_threads();
 }
