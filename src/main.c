@@ -31,6 +31,7 @@
 
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/queue.h>
 
 #include <arpa/inet.h>
 #include <netdb.h>
@@ -39,8 +40,10 @@
 #include <err.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 
 /* The file descriptor for the incoming socket.  Being something other than -1
  * means that it hasn't been set yet and doesn't need to be closed.  */
@@ -48,6 +51,21 @@ int sockfd = -1;
 
 /* Whether or not the main loop should continue.  */
 int should_continue = 1;
+
+enum thread_status { NOT_COMPLETED = 0, COMPLETED };
+
+/* Entry for a pthread list entry. */
+struct thread_listent {
+	pthread_t id;
+	LIST_ENTRY(thread_listent) ents;
+};
+
+struct thread_data {
+	int sockfd;
+};
+
+/* The linked list of threads. Use this to terminate them. */
+LIST_HEAD(pthread_list, thread_listent) thread_list;
 
 /* If this gives an error, used -std=gnu99 */
 #define 	SERVER_PORT "8110"
@@ -58,9 +76,12 @@ int should_continue = 1;
 static void	close_socket();
 static void	handle_connection(int socket);
 static void	init_networking();
+static void init_threads();
 static void	main_loop();
 static void	print_address(FILE *stream, struct sockaddr *sockaddr);
 static void	signal_handler(int signum);
+static void	terminate_threads();
+static void	*handler_function(void *data);
 
 /* 
  * Set up the networking.  Creates the port and sets sockfd to the value.
@@ -70,9 +91,9 @@ static void
 init_networking()
 {
 		struct addrinfo *host_addr, hints;
-		int status, sockfd;
+		int status;
 
-		memset(&hints, 0, sizeof(hints));
+		memset(&hints, 0, sizeof(struct addrinfo));
 		hints.ai_family = AF_UNSPEC;
 		hints.ai_socktype = SOCK_STREAM;
 		hints.ai_flags = AI_PASSIVE;
@@ -110,7 +131,7 @@ signal_handler(int signum)
 {
 
 		close_socket();
-		/* Do a bunch of stuff to terminate the worker threads here.  */
+		terminate_threads();
 
 		/* Set the signal back to its original value and use that.  */
 		signal (signum, SIG_DFL);
@@ -187,15 +208,81 @@ print_address(FILE *stream, struct sockaddr *sockaddr)
 		}
 }
 
+/* Initialize the list of threads. Other stuff can be put here if necessary. */
+static void
+init_threads()
+{
+		LIST_INIT(&thread_list);
+}
+
+/* Called to stop all threads and clean up the list. */
+static void
+terminate_threads()
+{
+		struct thread_listent *tmp;
+
+		while (!LIST_EMPTY(&thread_list)) {
+			tmp = LIST_FIRST(&thread_list);
+
+			pthread_join(tmp->id, NULL);
+
+			/* I think this is the right way to do it, not sure. */
+			LIST_REMOVE(tmp, ents);
+			free(tmp);
+		}
+}
+
+/* Stop all threads and remove theme. */
+
 /*
- * Handle the conection already accepted with socket. This function is
+ * Handle the connection already accepted with socket. This function is
  * responsible for closing the socket.
  */
 static void
 handle_connection(int socket)
 {
+		struct thread_listent *ent;
+		struct thread_data *data;
+		int status;
+		pthread_t id;
+
+		ent = malloc(sizeof(struct thread_listent));
+		if (ent == NULL)
+			err(1, NULL);
+
+		data = malloc(sizeof(struct thread_data));
+		if (data == NULL)
+			err(1, NULL);
+
+		data->sockfd = socket;
+
+		status = pthread_create(&id, NULL, handler_function, data);
+
+		if (status == 0) {
+			ent->id = id;
+			LIST_INSERT_HEAD(&thread_list, ent, ents);
+		} else {
+			warn("Failed to create new thread");
+			free(ent);
+			free(data);
+			close (socket);
+		}
+}
+
+/* The function to handle a socket. */
+static void *
+handler_function(void *data)
+{
+		struct thread_data *as_data;
+
+		as_data = (struct thread_data *)data;
+
 		/* TODO: Handle the connection here. */
-		close(socket);
+
+		close(as_data->sockfd);
+		free (data);
+
+		return (NULL);
 }
 
 /*
@@ -204,6 +291,7 @@ handle_connection(int socket)
 int
 main(int argc, char *argv[])
 {
-		init_networking ();
-		main_loop ();
+		init_networking();
+		main_loop();
+		terminate_threads();
 }
