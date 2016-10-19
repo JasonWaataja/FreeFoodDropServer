@@ -56,12 +56,12 @@ enum thread_status { NOT_COMPLETED = 0, COMPLETED };
 
 /* Entry for a pthread list entry. */
 struct thread_listent {
-	pthread_t id;
+	pthread_t	id;
 	LIST_ENTRY(thread_listent) ents;
 };
 
 struct thread_data {
-	int sockfd;
+	int	sockfd;
 };
 
 /* The linked list of threads. Use this to terminate them. */
