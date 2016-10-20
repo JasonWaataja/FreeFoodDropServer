@@ -42,35 +42,55 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <pthread.h>
 
 /* The file descriptor for the incoming socket.  Being something other than -1
- * means that it hasn't been set yet and doesn't need to be closed.  */
+ * means that it hasn't been set yet and doesn't need to be closed. */
 int sockfd = -1;
 
-/* Whether or not the main loop should continue.  */
+/* Whether or not the main loop should continue. */
 int should_continue = 1;
+
+/* Whether or not the clean loop should continue. */
+int should_clean_continue = 1;
 
 enum thread_status { NOT_COMPLETED = 0, COMPLETED };
 
 /* Entry for a pthread list entry. */
 struct thread_listent {
 	pthread_t id;
+	enum thread_status status;
 	LIST_ENTRY(thread_listent) ents;
 };
 
 struct thread_data {
 	int sockfd;
+	enum thread_status *p_status;
 };
 
 /* The linked list of threads. Use this to terminate them. */
 LIST_HEAD(pthread_list, thread_listent) thread_list;
 
+/* Thread list mutex. */
+pthread_mutex_t list_mutex;
+
+/* Thread used to remove finished threads from the list. */
+pthread_t thread_handler;
+
+/* Amout of time the thread handler waits before cleaning the thread list. */
+#define		THREAD_CLEAN_SEC 1
+#define		THREAD_CLEAN_NSEC 0
+
+/* Amount of time thread handler sleeps before updating. */
+#define		THREAD_CLEAN_UPDATE_SEC 0
+#define		THREAD_CLEAN_UPDATE_NSEC 10000000
+
 /* If this gives an error, used -std=gnu99 */
 #define 	SERVER_PORT "8110"
 
-/* The amount of connections to keep in the backlog.  */
+/* The amount of connections to keep in the backlog. */
 #define 	BACKLOG 20
 
 static void	close_socket();
@@ -82,6 +102,7 @@ static void	print_address(FILE *stream, struct sockaddr *sockaddr);
 static void	signal_handler(int signum);
 static void	terminate_threads();
 static void	*handler_function(void *data);
+static void	*handle_threads();
 
 /* 
  * Set up the networking.  Creates the port and sets sockfd to the value.
@@ -218,8 +239,19 @@ print_address(FILE *stream, struct sockaddr *sockaddr)
 static void
 init_threads()
 {
+	int rc;
 
 	LIST_INIT(&thread_list);
+
+	rc = pthread_mutex_init(&list_mutex, NULL);
+
+	if (rc != 0)
+		err(1, "Error creating thread list mutex");
+
+	rc = pthread_create(&thread_handler, NULL, handle_threads, NULL);
+
+	if (rc != 0)
+		err(1, "Error creating thread handler thread");
 }
 
 /* Called to stop all threads and clean up the list. */
@@ -227,6 +259,9 @@ static void
 terminate_threads()
 {
 	struct thread_listent *tmp;
+
+	should_clean_continue = 0;
+	pthread_join(thread_handler, NULL);
 
 	while (!LIST_EMPTY(&thread_list)) {
 		tmp = LIST_FIRST(&thread_list);
@@ -239,7 +274,49 @@ terminate_threads()
 	}
 }
 
-/* Stop all threads and remove theme. */
+static void *
+handle_threads()
+{
+	struct timespec sleep_time;
+	struct timespec clean_time;
+	struct timespec currt_time;
+	struct thread_listent *ent;
+	struct thread_listent *prev;
+	long nsec_stor;
+
+	sleep_time.tv_sec = THREAD_CLEAN_UPDATE_SEC;
+	sleep_time.tv_nsec = THREAD_CLEAN_UPDATE_NSEC;
+
+	clock_gettime(CLOCK_MONOTONIC, &clean_time);
+
+	while (should_clean_continue) {
+		nanosleep(&sleep_time, NULL);
+		clock_gettime(CLOCK_MONOTONIC, &currt_time);
+
+		if ((currt_time.tv_sec == clean_time.tv_sec) ?
+		    (currt_time.tv_nsec > clean_time.tv_nsec) : 
+		    (currt_time.tv_sec > clean_time.tv_sec)) {
+			nsec_stor = currt_time.tv_nsec + THREAD_CLEAN_NSEC;
+			clean_time.tv_nsec = nsec_stor % 1000000000;
+			clean_time.tv_sec = currt_time.tv_sec +
+			    THREAD_CLEAN_SEC + nsec_stor / 1000000000;
+
+			pthread_mutex_lock(&list_mutex);
+
+			LIST_FOREACH(ent, &thread_list, ents) {
+				if (ent->status == COMPLETED) {
+					pthread_join(ent->id, NULL);
+					prev = *(ent->ents.le_prev);
+					LIST_REMOVE(ent, ents);
+					free(ent);
+					ent = prev;
+				}
+			}
+
+			pthread_mutex_unlock(&list_mutex);
+		}
+	}
+}
 
 /*
  * Handle the connection already accepted with socket. This function is
@@ -249,7 +326,7 @@ static void
 handle_connection(int socket)
 {
 	struct thread_listent *ent;
-	struct thread_data *data;
+	struct thread_data data;
 	int status;
 	pthread_t id;
 
@@ -257,21 +334,21 @@ handle_connection(int socket)
 	if (ent == NULL)
 		err(1, NULL);
 
-	data = malloc(sizeof(struct thread_data));
-	if (data == NULL)
-		err(1, NULL);
+	data.sockfd = socket;
+	data.p_status = &ent->status;
 
-	data->sockfd = socket;
-
-	status = pthread_create(&id, NULL, handler_function, data);
+	status = pthread_create(&id, NULL, handler_function, &data);
 
 	if (status == 0) {
 		ent->id = id;
+		ent->status = NOT_COMPLETED;
+
+		pthread_mutex_lock(&list_mutex);
 		LIST_INSERT_HEAD(&thread_list, ent, ents);
+		pthread_mutex_unlock(&list_mutex);
 	} else {
 		warn("Failed to create new thread");
 		free(ent);
-		free(data);
 		close(socket);
 	}
 }
@@ -287,8 +364,9 @@ handler_function(void *data)
 	/* TODO: Handle the connection here. */
 
 	close(as_data->sockfd);
-	free(data);
-
+	pthread_mutex_lock(&list_mutex);
+	*(as_data->p_status) = COMPLETED;
+	pthread_mutex_unlock(&list_mutex);
 	return (NULL);
 }
 
@@ -299,6 +377,7 @@ int
 main(int argc, char *argv[])
 {
 
+	init_threads();
 	init_networking();
 	main_loop();
 	terminate_threads();
