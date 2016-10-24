@@ -64,8 +64,6 @@ struct thread_listent {
 	enum thread_status status;
 	LIST_ENTRY(thread_listent) ents;
 };
-	LIST_ENTRY(thread_listent) ents;
-};
 
 struct thread_data {
 	int	sockfd;
