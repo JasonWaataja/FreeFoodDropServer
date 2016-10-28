@@ -84,6 +84,12 @@ pthread_t thread_handler;
 /* MySQL/MariaDB data structure. */
 MYSQL *mysql;
 
+/* Bad request HTTP response. */
+static char *bad_request_response = 
+	"HTTP/1.1 400 Bad Request\r\n"
+	"Connection: close\r\n"
+	"\r\n";
+
 /* Amout of time the thread handler waits before cleaning the thread list. */
 #define		THREAD_CLEAN_SEC 1
 #define		THREAD_CLEAN_NSEC 0
@@ -133,8 +139,8 @@ init_database()
 
 	mysql = mysql_init(NULL);
 
-	if (!mysql_real_connect(mysql, "localhost", NULL, NULL, NULL, 0,
-		"/run/mysqld/mysqld.sock", 0)) {
+	if (!mysql_real_connect(mysql, "localhost", "root", NULL, NULL,
+			0, "/run/mysqld/mysqld.sock", 0)) {
 		printf("Unable to connect to MariaDB database \"ffd_db\"\n");
 		show_sql_error(mysql);
 	}
@@ -153,25 +159,25 @@ init_database()
 		show_sql_error(mysql);
 	}
 
-	query = "CREATE TABLE IF NOT EXISTS giveaways (\
-		 id INT UNSIGNED NOT NULL AUTO_INCREMENT,\
-		 name VARCHAR(40) NOT NULL,\
-		 address VARCHAR(20) NOT NULL,\
-		 type ENUM('foodbank', 'people', 'all') NOT NULL,\
-		 start DATE NOT NULL,\
-		 end DATE NOT NULL,\
-		 PRIMARY KEY (id));";
+	query = "CREATE TABLE IF NOT EXISTS giveaways ("
+		 "id INT UNSIGNED NOT NULL AUTO_INCREMENT,"
+		 "name VARCHAR(40) NOT NULL,"
+		 "address VARCHAR(20) NOT NULL,"
+		 "type ENUM('foodbank', 'people', 'all') NOT NULL,"
+		 "start DATE NOT NULL,"
+		 "end DATE NOT NULL,"
+		 "PRIMARY KEY (id));";
 
 	if (mysql_real_query(mysql, query, strlen(query))) {
 		printf("Unable to query/create table \"giveaways\"\n");
 		show_sql_error(mysql);
 	}
 
-	query = "CREATE TABLE IF NOT EXISTS food (\
-		 giveaway INT UNSIGNED NOT NULL,\
-		 name VARCHAR(20) NOT NULL,\
-		 amount VARCHAR(40) NOT NULL,\
-		 PRIMARY KEY (giveaway));";
+	query = "CREATE TABLE IF NOT EXISTS food ("
+		 "giveaway INT UNSIGNED NOT NULL,"
+		 "name VARCHAR(20) NOT NULL,"
+		 "amount VARCHAR(40) NOT NULL,"
+		 "PRIMARY KEY (giveaway));";
 
 	if (mysql_real_query(mysql, query, strlen(query))) {
 		printf("Unable to query/create table \"food\"\n");
@@ -433,15 +439,54 @@ static void *
 handler_function(void *data)
 {
 	struct thread_data *as_data;
+	char msg[256];
+	int index = 0;
+	int length;
 
 	as_data = (struct thread_data *)data;
 
-	/* TODO: Handle the connection here. */
+	do {
+		length = recv(as_data->sockfd, msg + index, sizeof(msg) - index, 0);
+		/* TODO: Error checking. */
+	
+		index += length;
+		if (index == sizeof(msg)) {
+			send(as_data->sockfd, bad_request_response,
+					strlen(bad_request_response), 0);
+
+			close(as_data->sockfd);
+
+			pthread_mutex_lock(&list_mutex);
+			*(as_data->p_status) = COMPLETED;
+			pthread_mutex_unlock(&list_mutex);
+
+			return (NULL);
+		}
+	} while (strstr(msg, "\r\n\r\n") == NULL);
+
+	msg[index] = '\0';
+	
+	if (strncmp(msg, "GET", 3) != 0) {
+		send(as_data->sockfd, bad_request_response,
+				strlen(bad_request_response), 0);
+
+		close(as_data->sockfd);
+
+		pthread_mutex_lock(&list_mutex);
+		*(as_data->p_status) = COMPLETED;
+		pthread_mutex_unlock(&list_mutex);
+
+		return (NULL);
+	}
+
+	/* TODO: Parse HTTP request, query database, and form HTTP response. */
 
 	close(as_data->sockfd);
+
 	pthread_mutex_lock(&list_mutex);
 	*(as_data->p_status) = COMPLETED;
 	pthread_mutex_unlock(&list_mutex);
+
 	return (NULL);
 }
 
