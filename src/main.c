@@ -37,8 +37,6 @@
 #include <netdb.h>
 #include <netinet/in.h>
 
-#include <mysql.h>
-
 #include <err.h>
 #include <signal.h>
 #include <stdio.h>
@@ -47,6 +45,8 @@
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
+
+#include "database.h"
 
 /* The file descriptor for the incoming socket.  Being something other than -1
  * means that it hasn't been set yet and doesn't need to be closed. */
@@ -81,14 +81,11 @@ pthread_mutex_t list_mutex;
 /* Thread used to remove finished threads from the list. */
 pthread_t thread_handler;
 
-/* MySQL/MariaDB data structure. */
-MYSQL *mysql;
-
 /* Bad request HTTP response. */
-static char *bad_request_response = 
-	"HTTP/1.1 400 Bad Request\r\n"
-	"Connection: close\r\n"
-	"\r\n";
+static char *bad_request_response =
+    "HTTP/1.1 400 Bad Request\r\n"
+    "Connection: close\r\n"
+    "\r\n";
 
 /* Amout of time the thread handler waits before cleaning the thread list. */
 #define		THREAD_CLEAN_SEC 1
@@ -105,85 +102,16 @@ static char *bad_request_response =
 #define 	BACKLOG 20
 
 static void	close_socket();
+static void	close_thread(struct thread_data *data);
 static void	handle_connection(int socket);
-static void	init_database();
 static void	init_networking();
 static void	init_threads();
 static void	main_loop();
 static void	print_address(FILE *stream, struct sockaddr *sockaddr);
-static void	show_sql_error(MYSQL *sql);
 static void	signal_handler(int signum);
 static void	terminate_threads();
 static void	*handler_function(void *data);
 static void	*handle_threads();
-
-static void
-show_sql_error(MYSQL *sql)
-{
-
-	printf("Error(%d) [%s] \"%s\"", mysql_errno(sql), mysql_sqlstate(sql),
-	    mysql_error(sql));
-
-	mysql_close(sql);
-	exit(1);
-}
-
-/*
- * Sets up the database connection. Connects to local mariadb database
- * exiting if there's and error.
- */
-static void
-init_database()
-{
-	char *query;
-
-	mysql = mysql_init(NULL);
-
-	if (!mysql_real_connect(mysql, "localhost", "root", NULL, NULL,
-			0, "/run/mysqld/mysqld.sock", 0)) {
-		printf("Unable to connect to MariaDB database \"ffd_db\"\n");
-		show_sql_error(mysql);
-	}
-
-	query = "CREATE DATABASE IF NOT EXISTS ffd_db;";
-
-	if (mysql_real_query(mysql, query, strlen(query))) {
-		printf("Unable to query/create database \"ffd_db\"\n");
-		show_sql_error(mysql);
-	}
-
-	query = "USE ffd_db;";
-
-	if (mysql_real_query(mysql, query, strlen(query))) {
-		printf("Unable to switch to database \"ffd_db\"\n");
-		show_sql_error(mysql);
-	}
-
-	query = "CREATE TABLE IF NOT EXISTS giveaways ("
-		 "id INT UNSIGNED NOT NULL AUTO_INCREMENT,"
-		 "name VARCHAR(40) NOT NULL,"
-		 "address VARCHAR(20) NOT NULL,"
-		 "type ENUM('foodbank', 'people', 'all') NOT NULL,"
-		 "start DATE NOT NULL,"
-		 "end DATE NOT NULL,"
-		 "PRIMARY KEY (id));";
-
-	if (mysql_real_query(mysql, query, strlen(query))) {
-		printf("Unable to query/create table \"giveaways\"\n");
-		show_sql_error(mysql);
-	}
-
-	query = "CREATE TABLE IF NOT EXISTS food ("
-		 "giveaway INT UNSIGNED NOT NULL,"
-		 "name VARCHAR(20) NOT NULL,"
-		 "amount VARCHAR(40) NOT NULL,"
-		 "PRIMARY KEY (giveaway));";
-
-	if (mysql_real_query(mysql, query, strlen(query))) {
-		printf("Unable to query/create table \"food\"\n");
-		show_sql_error(mysql);
-	}
-}
 
 /* 
  * Set up the networking.  Creates the port and sets sockfd to the value.
@@ -253,7 +181,7 @@ main_loop()
 		printf("Accepting connections.\n");
 
 		/* Accept a connection.  */
-		newfd = accept (sockfd, (struct sockaddr *)&their_sock,
+		newfd = accept(sockfd, (struct sockaddr *)&their_sock,
 		    &their_socklen);
 
 		if (newfd == -1)
@@ -439,55 +367,71 @@ static void *
 handler_function(void *data)
 {
 	struct thread_data *as_data;
-	char msg[256];
-	int index = 0;
+	char msg[1024];
+	char retmsg[2048];
+	int success;
+	int index;
 	int length;
 
 	as_data = (struct thread_data *)data;
+	index = 0;
 
 	do {
-		length = recv(as_data->sockfd, msg + index, sizeof(msg) - index, 0);
-		/* TODO: Error checking. */
-	
+		length = recv(as_data->sockfd, msg + index,
+		    sizeof(msg) - index, 0);
+
+		if (length <= 0) {
+			if (length < 0)
+				perror("recv");
+			close_thread(as_data);
+		}
+
 		index += length;
 		if (index == sizeof(msg)) {
 			send(as_data->sockfd, bad_request_response,
-					strlen(bad_request_response), 0);
+			    strlen(bad_request_response), 0);
 
-			close(as_data->sockfd);
-
-			pthread_mutex_lock(&list_mutex);
-			*(as_data->p_status) = COMPLETED;
-			pthread_mutex_unlock(&list_mutex);
-
-			return (NULL);
+			close_thread(as_data);
 		}
+
+		msg[index] = '\0';
 	} while (strstr(msg, "\r\n\r\n") == NULL);
 
-	msg[index] = '\0';
-	
-	if (strncmp(msg, "GET", 3) != 0) {
+	if (strncmp(msg, "GET", 3) != 0 && strncmp(msg, "POST", 4) != 0) {
 		send(as_data->sockfd, bad_request_response,
-				strlen(bad_request_response), 0);
+		    strlen(bad_request_response), 0);
 
-		close(as_data->sockfd);
-
-		pthread_mutex_lock(&list_mutex);
-		*(as_data->p_status) = COMPLETED;
-		pthread_mutex_unlock(&list_mutex);
-
-		return (NULL);
+		close_thread(as_data);
 	}
 
-	/* TODO: Parse HTTP request, query database, and form HTTP response. */
+	if (strncmp(msg, "GET ", 4) == 0)
+		success = process_get_query(msg, retmsg);
+	else if (strncmp(msg, "POST ", 5) == 0)
+		success = process_post_query(msg, retmsg);
 
-	close(as_data->sockfd);
+	if (!success) {
+		send(as_data->sockfd, bad_request_response,
+		    strlen(bad_request_response), 0);
+
+		close_thread(as_data);
+	}
+
+	send(as_data->sockfd, msg, strlen(msg), 0);
+
+	close_thread(as_data);
+}
+
+static void
+close_thread(struct thread_data *data)
+{
+
+	close(data->sockfd);
 
 	pthread_mutex_lock(&list_mutex);
-	*(as_data->p_status) = COMPLETED;
+	*(data->p_status) = COMPLETED;
 	pthread_mutex_unlock(&list_mutex);
 
-	return (NULL);
+	pthread_exit(NULL);
 }
 
 /*
